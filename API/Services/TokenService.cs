@@ -83,14 +83,25 @@ public class TokenService : ITokenService
         try
         {
             var tokenHandler = new JwtSecurityTokenHandler();
-            var tokenContent = tokenHandler.ReadJwtToken(request.Token);
-            var username = tokenContent.Claims.FirstOrDefault(q => q.Type == JwtRegisteredClaimNames.Name)?.Value;
-            if (string.IsNullOrEmpty(username))
+            // A refresh request must prove possession of both a JWT signed by this server and
+            // a valid refresh token. Expired JWTs are allowed only for this refresh operation.
+            var principal = tokenHandler.ValidateToken(request.Token, new TokenValidationParameters
             {
-                _logger.LogDebug("[RefreshToken] failed to validate due to not finding user in RefreshToken");
+                ValidateIssuerSigningKey = true,
+                IssuerSigningKey = _key,
+                RequireSignedTokens = true,
+                ValidAlgorithms = new[] { SecurityAlgorithms.HmacSha512 },
+                ValidateIssuer = false,
+                ValidateAudience = false,
+                ValidateLifetime = false
+            }, out _);
+            var userId = principal.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+            if (string.IsNullOrEmpty(userId))
+            {
+                _logger.LogDebug("[RefreshToken] failed to validate due to not finding user ID in signed JWT");
                 return null;
             }
-            var user = await _userManager.FindByNameAsync(username);
+            var user = await _userManager.FindByIdAsync(userId);
             if (user == null)
             {
                 _logger.LogDebug("[RefreshToken] failed to validate due to not finding user in DB");
@@ -98,7 +109,7 @@ public class TokenService : ITokenService
             }
 
             var validated = await _userManager.VerifyUserTokenAsync(user, TokenOptions.DefaultProvider, RefreshTokenName, request.RefreshToken);
-            if (!validated && tokenContent.ValidTo <= DateTime.UtcNow.Add(TimeSpan.FromHours(1)))
+            if (!validated)
             {
                 _logger.LogDebug("[RefreshToken] failed to validate due to invalid refresh token");
                 return null;
